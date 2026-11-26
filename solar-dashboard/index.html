@@ -199,7 +199,7 @@ function ranges(hours){ // [1,2,3,17] -> "01–04, 17–18"
 
 /* ---------- settings ---------- */
 const DEFAULTS={
-  name:'Mit anlæg', inverter:'Solplanet-inverter styret af SunMate.io', installDate:'2024-04-01', area:'DK2',
+  name:'Mit anlæg', inverter:'Solplanet-inverter styret af SunMate.io', installDate:'2024-04-01', sellStart:'', area:'DK2',
   investment:135000, kwp:10, battKwh:10, battKw:5, eff:92,
   houseKwh:4500, evKm:15000, evKwhKm:0.18, evKw:11,
   handel:0.06, energinet:0.14, salgsGebyr:0.03,
@@ -211,7 +211,7 @@ const DEFAULTS={
 const FIELDS=[
   ['Anlægget',[
     ['name','Navn','',null,'text'],['inverter','Inverter / styring','',null,'text'],
-    ['installDate','Taget i brug','',null,'date'],['investment','Samlet investering','kr',1000,'number','Inkl. montering, batteri og inverter'],
+    ['installDate','Taget i brug','',null,'date'],['sellStart','Salg af el startet','',null,'date','Før denne dato giver overskudsstrøm ingen betaling. Tom = fra start'],['investment','Samlet investering','kr',1000,'number','Inkl. montering, batteri og inverter'],
     ['kwp','Solcelleeffekt','kWp',0.1],['battKwh','Batteri, kapacitet','kWh',0.5,'number','0 hvis du ikke har batteri'],['battKw','Batteri, maks. effekt','kW',0.5],['eff','Batteri, virkningsgrad (tur/retur)','%',1],
   ]],
   ['Forbrug',[
@@ -276,6 +276,7 @@ function genDay(dn,installDn){
   const yf=(PR&&y>=2026?Math.pow(1+S.priceGrowth/100,Math.max(0,y-2026)):(YEARF[y]??Math.pow(1+S.priceGrowth/100,y-2026)))*calib(m);
   const lvl=SPOT_M[m]*yf*(1.45-0.9*wind)*(dow===0||dow===6?0.88:1);
   const ea=elafgift(y);
+  const sellFrom=S.sellStart?dnISO(S.sellStart):-1e9;
   const loadDay=S.houseKwh/365*LSEAS[m]/1.0075;
   const spot=[],buy=[],sell=[],pv=[],load=[];
   for(let h=0;h<24;h++){
@@ -283,7 +284,7 @@ function genDay(dn,installDn){
     sp=Math.max(-0.6,sp);if(real)sp=real[h];
     spot.push(sp);
     buy.push((sp+S.handel+tarif(h,m)+S.energinet+ea)*1.25);
-    sell.push(sp-S.salgsGebyr);
+    sell.push(dn<sellFrom?0:sp-S.salgsGebyr);
     pv.push(ss?pvDay*sun[h]/ss:0);
     load.push(loadDay*LSHAPE[h]);
   }
