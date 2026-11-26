@@ -206,7 +206,7 @@ const DEFAULTS={
   tLowW:0.13, tHighW:0.39, tPeakW:1.17, tLowS:0.13, tHighS:0.20, tPeakS:0.52,
   ea2024:0.761, ea2025:0.72, ea2026:0.008, ea2028:0.72,
   priceGrowth:2, degradation:0.5, years:25, invYear:12, invCost:18000, discount:3, interveneKr:5,
-  loanAmount:0, loanRate:5, loanYears:10, loanStart:'', taxDed:33,
+  loanAmount:0, loanRate:5, loanPmt:0, loanComp:12, loanYears:10, loanStart:'', taxDed:33, v:2,
 };
 const FIELDS=[
   ['Anlægget',[
@@ -225,7 +225,8 @@ const FIELDS=[
     ['ea2024','Elafgift 2024','kr/kWh',0.001],['ea2025','Elafgift 2025','kr/kWh',0.001],['ea2026','Elafgift 2026–2027','kr/kWh',0.001,'number','Nedsat til EU-minimum'],['ea2028','Elafgift fra 2028 (antagelse)','kr/kWh',0.001,'number','Ret hvis politikerne beslutter andet'],
   ]],
   ['Lån til anlægget',[
-    ['loanAmount','Lånebeløb','kr',1000,'number','0 hvis anlægget er betalt kontant'],['loanRate','Rente (debitorrente)','% pr. år',0.05],['loanYears','Løbetid','år',1],
+    ['loanAmount','Hovedstol','kr',1000,'number','0 hvis anlægget er betalt kontant'],['loanRate','Rente (variabel)','% pr. år',0.05,'number','Ret her, når banken ændrer renten'],['loanPmt','Månedlig ydelse','kr',5,'number','Fast ydelse. 0 = beregn ydelse ud fra løbetid'],
+    ['loanComp','Rentetilskrivninger pr. år','gange',1,'number','4 = kvartalsvis, 12 = månedlig'],['loanYears','Løbetid (kun når ydelse = 0)','år',1],
     ['loanStart','Første ydelse','',null,'date','Tom = samme dato som anlægget blev taget i brug'],['taxDed','Rentefradrag','%',0.1,'number','Skatteværdi af renteudgifter, typisk ca. 33 %'],
   ]],
   ['Business case',[
@@ -235,7 +236,8 @@ const FIELDS=[
   ]],
 ];
 let S=loadSettings();
-function loadSettings(){try{const j=JSON.parse(localStorage.getItem('solcelle-settings')||'null');if(j)return{...DEFAULTS,...j,_custom:true}}catch(e){}return{...DEFAULTS}}
+const LOAN_KEYS=['loanAmount','loanRate','loanPmt','loanComp','loanYears','loanStart','taxDed'];
+function loadSettings(){try{const j=JSON.parse(localStorage.getItem('solcelle-settings')||'null');if(j){if((j.v||1)<2){for(const k of LOAN_KEYS)delete j[k];j.v=2}return{...DEFAULTS,...j,_custom:true}}}catch(e){}return{...DEFAULTS}}
 function saveSettings(){try{const o={...S};delete o._custom;localStorage.setItem('solcelle-settings',JSON.stringify(o))}catch(e){}}
 
 /* ---------- model: weather, prices, consumption ---------- */
@@ -396,11 +398,17 @@ function runAll(){
   const invKey=(()=>{const d=dateOf(d0+Math.round(S.invYear*365.25));return d.getUTCFullYear()*12+d.getUTCMonth()})();
   // lån: annuitetslån, rente efter fradrag lægges til omkostningerne
   const loan={pmt:0,intTotal:0,intNetTotal:0,balToday:0,intNet12:0};
-  if(S.loanAmount>0&&S.loanYears>0){
-    const ls=S.loanStart?dateOf(dnISO(S.loanStart)):dateOf(d0),lk=ls.getUTCFullYear()*12+ls.getUTCMonth(),n=Math.round(S.loanYears*12),r=S.loanRate/1200;
-    loan.pmt=r>0?S.loanAmount*r/(1-Math.pow(1+r,-n)):S.loanAmount/n;let bal=S.loanAmount;loan.sched=new Map();
-    for(let k=0;k<n;k++){const it=bal*r,pr=loan.pmt-it;bal=Math.max(0,bal-pr);loan.sched.set(lk+k,{it,net:it*(1-S.taxDed/100),pay:loan.pmt,bal});loan.intTotal+=it;loan.intNetTotal+=it*(1-S.taxDed/100)}
-    loan.endKey=lk+n-1;loan.startKey=lk;
+  if(S.loanAmount>0&&(S.loanPmt>0||S.loanYears>0)){
+    // fast ydelse hver måned; renten opsamles og tilskrives ved hvert kalenderkvartal (eller måned) og lægges på gælden
+    const ls=S.loanStart?dateOf(dnISO(S.loanStart)):dateOf(d0),lk=ls.getUTCFullYear()*12+ls.getUTCMonth(),r=S.loanRate/1200;
+    const comp=Math.max(1,Math.min(12,Math.round(S.loanComp||12))),every=12/comp;
+    if(S.loanPmt>0)loan.pmt=S.loanPmt;else{const n=Math.round(S.loanYears*12);loan.pmt=r>0?S.loanAmount*r/(1-Math.pow(1+r,-n)):S.loanAmount/n}
+    let bal=S.loanAmount,acc=0;loan.sched=new Map();let k=0;
+    while(bal>0.5&&k<720){const key=lk+k;const it=bal*r;acc+=it;
+      if(((key%12)+1)%every===0||comp===12){bal+=acc;acc=0}
+      const pay=Math.min(loan.pmt,bal+acc);bal-=pay;
+      loan.sched.set(key,{it,net:it*(1-S.taxDed/100),pay,bal:Math.max(0,bal)});loan.intTotal+=it;loan.intNetTotal+=it*(1-S.taxDed/100);k++}
+    loan.months=k;loan.endKey=lk+k-1;loan.startKey=lk;loan.never=bal>0.5;
   }
   let cA=-S.investment,cO=-S.investment,payA=null,payO=null;
   for(const mo of list){
@@ -655,7 +663,7 @@ function renderEconomy(){
       <div><div class="l">Tilbagebetalt (optimal styring)</div><div class="v">${payO?fmtMonth(payO.y,payO.m):'–'}</div><div class="h">${payA&&payO?`${nf((payA.key-payO.key))} mdr. tidligere`:''}</div></div>
       <div><div class="l">Overskud efter ${S.years} år</div><div class="v" style="color:var(${R.finalA>0?'--good-ink':'--crit-ink'})">${kr(R.finalA)}</div><div class="h">Samlet gevinst ${kr(lifeGain)}${S.invYear<S.years?` − ny inverter ${kr(S.invCost)}`:''}${R.loan.pmt?` − renter efter fradrag ${kr(R.loan.intNetTotal)}`:''}</div></div>
       ${R.loan.pmt?`<div><div class="l">Lån: ydelse pr. måned</div><div class="v">${kr(R.loan.pmt)}</div><div class="h">Anlægget tjente i snit ${kr(R.last12/12)} pr. md. de sidste 12 mdr. · <span class="pill ${R.last12/12>=R.loan.pmt?'good':'warn'}">${R.last12/12>=R.loan.pmt?'Dækker ydelsen':`Dækker ${nf(R.last12/12/R.loan.pmt*100)} %`}</span></div></div>
-      <div><div class="l">Lån: restgæld i dag</div><div class="v">${kr(R.loan.balToday)}</div><div class="h">${kr(S.loanAmount)} over ${nf(S.loanYears)} år til ${nf(S.loanRate,2)} % · renter i alt ${kr(R.loan.intTotal)} (${kr(R.loan.intNetTotal)} efter fradrag)</div></div>`:''}
+      <div><div class="l">Lån: restgæld i dag</div><div class="v">${kr(R.loan.balToday)}</div><div class="h">${kr(S.loanAmount)} til ${nf(S.loanRate,2)} % (variabel) · ${R.loan.never?'<span class="pill crit">Ydelsen dækker ikke renten</span>':`færdigbetalt ${fmtMonth(Math.floor(R.loan.endKey/12),R.loan.endKey%12)} (${nf(R.loan.months/12,1)} år)`} · renter i alt ${kr(R.loan.intTotal)} (${kr(R.loan.intNetTotal)} efter fradrag)</div></div>`:''}
       <div><div class="l">Forrentning (IRR)</div><div class="v">${R.irr!=null?nf(R.irr*100,1)+' %':'–'}</div><div class="h">Mod alternativ rente ${nf(S.discount,1)} % · ${R.irr!=null&&R.irr*100>S.discount?'<span class="pill good">Bedre</span>':'<span class="pill crit">Dårligere</span>'}</div></div>
       <div><div class="l">Nutidsværdi</div><div class="v">${kr(R.npv)}</div><div class="h">Diskonteret med ${nf(S.discount,1)} %. Over 0 betyder at det kan betale sig</div></div>
     </div>
@@ -669,7 +677,7 @@ function renderEconomy(){
       <p>Købspris = (spotpris + elhandlerens tillæg + nettarif + Energinet-tarif + elafgift) × 1,25 moms. Salgspris = spotpris − salgsgebyr.</p>
       <p>Elafgiften er sat ned til ${krk(S.ea2026,3)} i 2026–2027. Det gør strøm du selv bruger mindre værd og forlænger tilbagebetalingstiden. Fra 2028 regnes med ${krk(S.ea2028,3)}. Ret det under <a href="#indstillinger">Mit anlæg</a>.</p>
       <p>Fremtiden regnes med ${nf(S.priceGrowth,1)} % årlig elprisstigning, ${nf(S.degradation,1)} % årligt tab i panelerne, 2 % årligt kapacitetstab i batteriet${S.invYear<S.years?` og en ny inverter efter ${S.invYear} år`:''}.</p>
-      <p>${R.loan.pmt?`Lånet regnes som et annuitetslån. Afdragene er en del af investeringen, som allerede er trukket fra. Renterne er en ekstra omkostning og trækkes fra med ${nf(100-S.taxDed)} % efter rentefradrag, så anlægget først er betalt tilbage, når gevinsten også har dækket renterne. Forrentningen (IRR) gælder selve investeringen, før lånet.`:'Der er ikke lagt et lån ind. Har du lånt til anlægget, så skriv lånet ind under <a href="#indstillinger">Mit anlæg</a>.'}</p>
+      <p>${R.loan.pmt?`Lånet regnes med ${S.loanPmt>0?`fast ydelse på ${kr(S.loanPmt)} pr. måned`:'annuitetsydelse'} og ${nf(S.loanComp)} rentetilskrivninger om året. Renten er variabel, så ret den under Mit anlæg, når banken ændrer den. Afdragene er en del af investeringen, som allerede er trukket fra. Renterne er en ekstra omkostning og trækkes fra med ${nf(100-S.taxDed)} % efter rentefradrag, så anlægget først er betalt tilbage, når gevinsten også har dækket renterne. Forrentningen (IRR) gælder selve investeringen, før lånet.`:'Der er ikke lagt et lån ind. Har du lånt til anlægget, så skriv lånet ind under <a href="#indstillinger">Mit anlæg</a>.'}</p>
     </div></details>
   </div>
   <div class="panel">
@@ -831,5 +839,7 @@ function recompute(rerender){
 window.addEventListener('hashchange',()=>{route();window.scrollTo(0,0)});
 let rw;window.addEventListener('resize',()=>{clearTimeout(rw);rw=setTimeout(()=>{if(current!=='indstillinger')VIEWS[current]()},150)});
 recompute(true);
+// personlige standardværdier (lån m.m.) ligger i personal.json, som kun udgives med dashboardet og ikke ligger i git
+fetch('personal.json',{cache:'no-cache'}).then(r=>r.ok?r.json():null).then(j=>{if(!j||typeof j!=='object')return;for(const k of Object.keys(DEFAULTS))if(k in j)DEFAULTS[k]=j[k];S=loadSettings();recompute(true)}).catch(()=>{});
 fetch('prices.json',{cache:'no-cache'}).then(r=>r.ok?r.json():null).then(j=>{if(!j||!j.areas)return;PR=j;PR.startDn=dnISO(j.start);calibrate();recompute(true)}).catch(()=>{});
 </script>
