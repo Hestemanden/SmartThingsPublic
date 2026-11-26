@@ -206,7 +206,7 @@ function ranges(hours){ // [1,2,3,17] -> "01–04, 17–18"
 /* ---------- settings ---------- */
 const DEFAULTS={
   name:'Mit anlæg', inverter:'Solplanet-inverter styret af SunMate.io', installDate:'2024-04-01', sellStart:'', area:'DK2',
-  investment:135000, kwp:10, panelAz:180, panelTilt:35, battKwh:10, battKw:5, eff:92, battDeg:2, invKw:10, oversize:150, gridCharge:1, battToGrid:1, noBattForEv:0, minSoc:5, maxSoc:100, oldMinSoc:0, minSocChanged:'', netbalStart:'', netbalMargin:10, hpStart:'', gasM3:0, hpScop:3.5, gasSupplier:9, gasAbon:0, evidaVar:4.43, evidaFixed:2057, boilerService:1200, boilerCost:35000, boilerLife:15, boilerAge:0, airCost:110000, airLife:18, groundCost:175000, groundLife:25, groundScop:4.5, hpService:1000, hpGrant:0,
+  investment:135000, kwp:10, panelAz:180, panelTilt:35, battKwh:10, battKw:5, eff:92, battDeg:2, invKw:10, oversize:150, gridCharge:1, battToGrid:1, noBattForEv:0, minSoc:5, maxSoc:100, oldMinSoc:0, minSocChanged:'', netbalStart:'', netbalMargin:10, hpStart:'', gasM3:0, hpScop:3.5, gasSupplier:9, gasAbon:0, evidaVar:4.43, evidaFixed:2057, boilerService:1200, boilerCost:35000, boilerLife:15, boilerAge:0, airCost:110000, airLife:18, groundCost:175000, groundLife:25, groundIndoor:0, groundCollectorLife:50, groundScop:4.5, hpService:1000, hpGrant:0,
   houseKwh:4500, evKm:15000, evKwhKm:0.18, evKw:11,
   handel:0.06, energinet:0.14, salgsGebyr:0.03,
   tLowW:0.13, tHighW:0.39, tPeakW:1.17, tLowS:0.13, tHighS:0.20, tPeakS:0.52,
@@ -244,7 +244,8 @@ const FIELDS=[
   ['Varmepumpe (fremtid)',[
     ['hpStart','Varmepumpe tages i brug','',null,'date','Tom = ingen varmepumpe'],['gasM3','Nuværende gasforbrug pr. år','m³',50,'number','Står på gasregningen'],['hpScop','Luft-til-vand, årsvirkningsgrad (SCOP)','',0.1,'number','Typisk 3,5'],['groundScop','Jordvarme, årsvirkningsgrad (SCOP)','',0.1,'number','Typisk 4,5'],
     ['airCost','Luft-til-vand, pris inkl. installation','kr',1000,'number','Antagelse – ret til et rigtigt tilbud'],['airLife','Luft-til-vand, levetid','år',1],
-    ['groundCost','Jordvarme, pris inkl. boring/slanger','kr',1000,'number','Antagelse – ret til et rigtigt tilbud'],['groundLife','Jordvarme, levetid','år',1],
+    ['groundCost','Jordvarme, pris inkl. boring/slanger','kr',1000,'number','Antagelse – ret til et rigtigt tilbud'],['groundLife','Jordvarme, levetid for indedel','år',1],
+    ['groundIndoor','Jordvarme, pris for ny indedel','kr',1000,'number','0 = hele anlægget skiftes efter levetiden'],['groundCollectorLife','Jordvarme, levetid for jordslanger','år',1],
     ['hpService','Service på varmepumpe','kr/år',100],['hpGrant','Tilskud til varmepumpe','kr',1000],
   ]],
   ['Gas i dag',[
@@ -881,7 +882,7 @@ function heatData(){
     const b0=scenarioBill({hpStart:'',...o}),bA=scenarioBill({hpStart:on,...o}),bG=scenarioBill({hpStart:on,hpScop:S.groundScop,...o});
     return{elA:bA.bill-b0.bill,elG:bG.bill-b0.bill,elAnoSol:bA.base-b0.base,elGnoSol:bG.base-b0.base}};
   const gasYear=gm=>boilerCap()+S.evidaFixed+(+S.gasAbon||0)+S.gasM3*(S.evidaVar+S.gasSupplier*gm)+S.boilerService;
-  const capA=annuity(Math.max(0,S.airCost-S.hpGrant),S.airLife,r),capG=annuity(Math.max(0,S.groundCost-S.hpGrant),S.groundLife,r);
+  const capA=annuity(Math.max(0,S.airCost-S.hpGrant),S.airLife,r),capG=S.groundIndoor>0?annuity(Math.max(0,S.groundCost-S.hpGrant-S.groundIndoor),S.groundCollectorLife||50,r)+annuity(S.groundIndoor,S.groundLife,r):annuity(Math.max(0,S.groundCost-S.hpGrant),S.groundLife,r);
   const base=run(1);
   const sens=[0.7,1,1.3].map(pm=>{const x=pm===1?base:run(pm);return[0.7,1,1.3].map(gm=>({pm,gm,gas:gasYear(gm),A:capA+x.elA+S.hpService,G:capG+x.elG+S.hpService}))});
   HX={kwhA:kwhOf(S.hpScop),kwhG:kwhOf(S.groundScop),base,gas:gasYear(1),capA,capG,sens};hxKey=key;return HX;
@@ -921,7 +922,7 @@ function renderHeat(){
     <p class="small muted">Tabellen ovenfor viser den gennemsnitlige årlige omkostning på lang sigt, hvor også gasfyret fornyes hvert ${nf(S.boilerLife)}. år.</p></div>`:''}
   <div class="facts" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr))">
     <div><div class="l">Solcellernes bidrag til varmepumpen</div><div class="v">${kr(b.elAnoSol-b.elA)} / år</div><div class="h">Luft-til-vand: strømmen ville koste ${kr(b.elAnoSol)} uden solceller og batteri</div></div>
-    <div><div class="l">Investering efter tilskud</div><div class="v">${kr(nA)} / ${kr(nG)}</div><div class="h">Luft-til-vand / jordvarme · levetid ${nf(S.airLife)} / ${nf(S.groundLife)} år</div></div>
+    <div><div class="l">Investering efter tilskud</div><div class="v">${kr(nA)} / ${kr(nG)}</div><div class="h">Luft-til-vand / jordvarme · levetid ${nf(S.airLife)} år / ${S.groundIndoor>0?`indedel ${nf(S.groundLife)} år, jordslanger ${nf(S.groundCollectorLife)} år`:nf(S.groundLife)+' år'}</div></div>
   </div>
   <div class="grid2">${[['Luft-til-vand','A'],['Jordvarme','G']].map(([t,k])=>`<div class="panel"><div class="panel-head"><h2>${t}: besparelse pr. år</h2><p>Ved andre gas- og elpriser</p></div>
     <div class="tscroll"><table><thead><tr><th>Elpris ↓ · gaspris →</th><th>−30 %</th><th>Som nu</th><th>+30 %</th></tr></thead><tbody>
