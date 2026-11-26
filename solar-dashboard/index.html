@@ -207,7 +207,7 @@ const DEFAULTS={
   handel:0.06, energinet:0.14, salgsGebyr:0.03,
   tLowW:0.13, tHighW:0.39, tPeakW:1.17, tLowS:0.13, tHighS:0.20, tPeakS:0.52,
   ea2024:0.761, ea2025:0.72, ea2026:0.008, ea2028:0.72,
-  priceGrowth:2, degradation:0.5, years:25, invYear:12, invCost:18000, discount:3, interveneKr:5,
+  priceGrowth:2, degradation:0.5, years:25, invYear:12, invCost:18000, discount:3, interveneKr:5, costItems:null,
   loanAmount:0, loanRate:5, loanPmt:0, loanComp:12, loanYears:10, loanStart:'', taxDed:33, v:2,
 };
 const FIELDS=[
@@ -661,6 +661,7 @@ function renderEconomy(){
   v.innerHTML=`
   <div class="panel">
     <div class="panel-head"><h2>Business case</h2><p>Investering ${kr(S.investment)} · start ${fmtDate(R.d0)} · ${S.years} års levetid</p></div>
+    ${Array.isArray(S.costItems)&&S.costItems.length?`<div class="tscroll" style="margin-bottom:12px"><table><thead><tr><th>Investeringen fordelt</th><th>Beløb</th></tr></thead><tbody>${S.costItems.map(([n,b])=>`<tr><td class="txt">${esc(n)}</td><td class="${b<0?'pos':''}">${kr(b)}</td></tr>`).join('')}</tbody><tfoot><tr><td class="txt">I alt</td><td>${kr(S.costItems.reduce((a,x)=>a+(+x[1]||0),0))}</td></tr></tfoot></table></div>`:''}
     <div class="facts">
       <div><div class="l">Tjent ind indtil nu</div><div class="v">${kr(R.earned)}</div><div class="h">Mangler ${kr(Math.max(0,S.investment-R.earned))}</div></div>
       <div><div class="l">Tilbagebetalt (nuværende AI)</div><div class="v">${payA?fmtMonth(payA.y,payA.m):'Ikke inden for '+S.years+' år'}</div><div class="h">${payA?nf((payA.key-(y0*12+d0.getUTCMonth()))/12,1)+' år':''}</div></div>
