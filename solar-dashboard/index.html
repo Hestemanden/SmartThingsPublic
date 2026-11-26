@@ -274,7 +274,7 @@ function genDay(dn,installDn){
   const clear=0.25+1.3*Math.pow(cloud,0.8);
   const yrs=Math.max(0,(dn-installDn)/365.25);
   const degr=Math.pow(1-S.degradation/100,yrs);
-  const pvDay=S.kwp*YIELD[m]/DIM[m]*clear*degr;
+  const pvDay=S.kwp*YIELD[m]/DIM[m]*clear*degr*(S._pvm||1);
   const real=realDay(dn);
   const yf=(PR&&y>=2026?Math.pow(1+S.priceGrowth/100,Math.max(0,y-2026)):(YEARF[y]??Math.pow(1+S.priceGrowth/100,y-2026)))*calib(m);
   const lvl=SPOT_M[m]*yf*(1.45-0.9*wind)*(dow===0||dow===6?0.88:1);
@@ -284,7 +284,7 @@ function genDay(dn,installDn){
   const spot=[],buy=[],sell=[],pv=[],load=[];
   for(let h=0;h<24;h++){
     let sp=lvl*PSHAPE[h]-0.55*SUNM[m]*(clear/1.55)*(0.4+wind)*(smax?sun[h]/smax:0)*yf+(r()-0.5)*0.06;
-    sp=Math.max(-0.6,sp);if(real)sp=real[h];
+    sp=Math.max(-0.6,sp);if(real)sp=real[h];if(S._pm)sp*=S._pm;
     spot.push(sp);
     buy.push((sp+S.handel+tarif(h,m)+S.energinet+ea)*1.25);
     sell.push(dn<sellFrom?0:sp-S.salgsGebyr);
@@ -819,7 +819,7 @@ function scenario(over){
   try{for(let dn=t-365;dn<t;dn++){const day=genDay(dn,dn);const cap=S.battKwh>0?S.battKwh*0.95:0;
     const a=simAI(day,soc,cap,false);soc=a.soc;const evO=evPlan(day,true);let base=0;
     for(let h=0;h<24;h++)base+=(day.load[h]+evO[h])*day.buy[h];gain+=base-a.cost}}
-  finally{Object.assign(S,keep)}
+  finally{Object.assign(S,keep);delete S._pm;delete S._pvm}
   return gain;
 }
 const pvFactor=(n)=>{const r=S.discount/100;return r>0?(1-Math.pow(1+r,-n))/r:n};
@@ -846,6 +846,7 @@ function renderExpand(){
   <div class="panel prose" style="max-width:none">
     <div class="panel-head"><h2>Hvad tjener hver del af anlægget?</h2><p>Gevinst pr. år med elpriserne fra de sidste 12 måneder</p></div>
     <p class="small muted">Regnet med elafgift som fra 2028 (${krk(S.ea2028,3)}), fordi det er den, der gælder det meste af levetiden. Batteriet regnes med ${LIFE_BATT} års levetid og panelerne med ${LIFE_PV} år, diskonteret med ${nf(S.discount,1)} %. Indtægt fra netbalancering er ikke med.</p>
+    <p class="small"><span class="pill warn">Foreløbigt</span> Produktion og forbrug er simuleret, indtil data fra SunMate eller Solplanet er koblet på. Tallene viser, hvad regnestykket giver under de antagelser. Brug følsomhedstabellerne til at se, om svaret holder, hvis priser eller produktion bliver anderledes.</p>
   </div>
   <div class="facts">
     <div><div class="l">Hele anlægget</div><div class="v">${kr(E.base)} / år</div><div class="h">${nf(S.kwp,1)} kWp og ${nf(S.battKwh,1)} kWh batteri</div></div>
@@ -883,12 +884,18 @@ function renderExpand(){
     dim:i=>items[i].k!==cur,stacks:[{color:'--accent',values:items.map(b=>b.g)}],xTick:i=>nf(items[i].k,unit==='kWp'?1:0)+' '+unit,
     tip:i=>{const b=items[i],p=items[i-1];return tipRows(`${nf(b.k,1)} ${unit}${b.k===cur?' (dit anlæg)':''}`,[['--accent','Gevinst pr. år',kr(b.g)]].concat(p?[['',`Ekstra fra ${nf(p.k,1)} ${unit}`,kr(b.g-p.g)]]:[]))}});
   bar($('#exBatt'),E.batt,S.battKwh,'kWh');bar($('#exPv'),E.pvs,S.kwp,'kWp');
+  const yrsTxt=y=>Number.isFinite(y)&&y<99?nf(y,1)+' år':'over 99 år';
   const verdict=(gain,price,life)=>{const yrs=gain>0?price/gain:Infinity,ok=gain*pvFactor(life)>=price;
-    return`<div class="facts" style="margin-top:6px"><div><div class="l">Ekstra gevinst pr. år</div><div class="v">${kr(gain)}</div></div><div><div class="l">Tilbagebetalingstid</div><div class="v">${Number.isFinite(yrs)&&yrs<99?nf(yrs,1)+' år':'Aldrig'}</div><div class="h"><span class="pill ${ok?'good':'crit'}">${ok?'Kan betale sig':'Betaler sig ikke'}</span> inden for ${life} år</div></div></div>`};
+    return`<div class="facts" style="margin-top:6px"><div><div class="l">Ekstra gevinst pr. år</div><div class="v">${kr(gain)}</div><div class="h">Med elpriser og produktion som nu</div></div><div><div class="l">Tilbagebetalingstid</div><div class="v">${yrsTxt(yrs)}</div><div class="h"><span class="pill ${ok?'good':'crit'}">${ok?'Tjener sig hjem':'Tjener sig ikke hjem'}</span> inden for ${life} år under disse antagelser</div></div></div>`};
+  const PM=[0.7,1,1.3],PVM=[0.8,1,1.2];
+  const sens=(over,price,life)=>{const rows=PM.map(pm=>PVM.map(pvm=>{const g=scenario({...over,_pm:pm,_pvm:pvm})-scenario({_pm:pm,_pvm:pvm});const y=g>0?price/g:Infinity;return{y,ok:g*pvFactor(life)>=price}}));
+    return`<div class="tscroll" style="margin-top:10px"><table><thead><tr><th>Spotpris ↓ · produktion →</th>${PVM.map(x=>`<th>${x===1?'Som simuleret':(x<1?'−':'+')+nf(Math.abs(x-1)*100)+' %'}</th>`).join('')}</tr></thead><tbody>${rows.map((r,i)=>`<tr><td class="txt">${PM[i]===1?'Som nu':(PM[i]<1?'−':'+')+nf(Math.abs(PM[i]-1)*100)+' % spotpris'}</td>${r.map(c=>`<td><span class="pill ${c.ok?'good':'crit'}">${yrsTxt(c.y)}</span></td>`).join('')}</tr>`).join('')}</tbody></table></div><p class="small muted">Tilbagebetalingstid ved andre elpriser og anden produktion. Grøn = tjener sig hjem inden for ${life} år.</p>`};
   const calc=()=>{
     exBattAdd=+$('#exBattAdd').value||0;exBattPrice=+$('#exBattPrice').value||0;exPvAdd=+$('#exPvAdd').value||0;exPvPrice=+$('#exPvPrice').value||0;
-    const gB=scenario({battKwh:S.battKwh+exBattAdd})-E.base,gP=scenario({kwp:S.kwp+exPvAdd})-E.base;
-    $('#exBattRes').innerHTML=verdict(gB,exBattPrice,LIFE_BATT);$('#exPvRes').innerHTML=verdict(gP,exPvPrice,LIFE_PV)+(S.kwp+exPvAdd>E.maxKwp+0.01?`<p class="small"><span class="pill warn">! Over inverterens grænse</span> ${nf(S.kwp+exPvAdd,1)} kWp er mere end de ${nf(E.maxKwp,1)} kWp, inverteren må have. Det kræver en større inverter eller en ekstra.</p>`:'')};
+    const oB={battKwh:S.battKwh+exBattAdd},oP={kwp:S.kwp+exPvAdd};
+    const gB=scenario(oB)-E.base,gP=scenario(oP)-E.base;
+    $('#exBattRes').innerHTML=verdict(gB,exBattPrice,LIFE_BATT)+sens(oB,exBattPrice,LIFE_BATT);
+    $('#exPvRes').innerHTML=verdict(gP,exPvPrice,LIFE_PV)+sens(oP,exPvPrice,LIFE_PV)+(S.kwp+exPvAdd>E.maxKwp+0.01?`<p class="small"><span class="pill warn">! Over inverterens grænse</span> ${nf(S.kwp+exPvAdd,1)} kWp er mere end de ${nf(E.maxKwp,1)} kWp, inverteren må have. Det kræver en større inverter eller en ekstra.</p>`:'')};
   let t;v.querySelectorAll('input').forEach(i=>i.addEventListener('input',()=>{clearTimeout(t);t=setTimeout(calc,300)}));calc();
   },20);
 }
