@@ -162,6 +162,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <a href="#styring">AI-styring</a>
       <a href="#priser">Elpriser</a>
       <a href="#udvid">Udvid anlægget</a>
+      <a href="#varme">Varme</a>
       <a href="#indstillinger">Mit anlæg</a>
     </nav>
   </div>
@@ -173,6 +174,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   <section class="view" id="v-styring" hidden></section>
   <section class="view" id="v-priser" hidden></section>
   <section class="view" id="v-udvid" hidden></section>
+  <section class="view" id="v-varme" hidden></section>
   <section class="view" id="v-regnskab" hidden></section>
   <section class="view" id="v-indstillinger" hidden></section>
 </main>
@@ -204,7 +206,7 @@ function ranges(hours){ // [1,2,3,17] -> "01–04, 17–18"
 /* ---------- settings ---------- */
 const DEFAULTS={
   name:'Mit anlæg', inverter:'Solplanet-inverter styret af SunMate.io', installDate:'2024-04-01', sellStart:'', area:'DK2',
-  investment:135000, kwp:10, battKwh:10, battKw:5, eff:92, battDeg:2, invKw:10, oversize:150, gridCharge:1, battToGrid:1, noBattForEv:0, minSoc:5, maxSoc:100, oldMinSoc:0, minSocChanged:'', netbalStart:'', netbalMargin:10, hpStart:'', gasM3:0, hpScop:3.5,
+  investment:135000, kwp:10, battKwh:10, battKw:5, eff:92, battDeg:2, invKw:10, oversize:150, gridCharge:1, battToGrid:1, noBattForEv:0, minSoc:5, maxSoc:100, oldMinSoc:0, minSocChanged:'', netbalStart:'', netbalMargin:10, hpStart:'', gasM3:0, hpScop:3.5, gasSupplier:9, evidaVar:4.43, evidaFixed:2057, boilerService:1200, airCost:110000, airLife:18, groundCost:175000, groundLife:25, groundScop:4.5, hpService:1000, hpGrant:0,
   houseKwh:4500, evKm:15000, evKwhKm:0.18, evKw:11,
   handel:0.06, energinet:0.14, salgsGebyr:0.03,
   tLowW:0.13, tHighW:0.39, tPeakW:1.17, tLowS:0.13, tHighS:0.20, tPeakS:0.52,
@@ -240,7 +242,14 @@ const FIELDS=[
     ['loanStart','Første ydelse','',null,'date','Tom = samme dato som anlægget blev taget i brug'],['taxDed','Rentefradrag','%',0.1,'number','Skatteværdi af renteudgifter, typisk ca. 33 %'],
   ]],
   ['Varmepumpe (fremtid)',[
-    ['hpStart','Varmepumpe tages i brug','',null,'date','Tom = ingen varmepumpe'],['gasM3','Nuværende gasforbrug pr. år','m³',50,'number','Står på gasregningen'],['hpScop','Varmepumpens årsvirkningsgrad (SCOP)','',0.1,'number','Luft-til-vand ca. 3,5 · jordvarme ca. 4,5'],
+    ['hpStart','Varmepumpe tages i brug','',null,'date','Tom = ingen varmepumpe'],['gasM3','Nuværende gasforbrug pr. år','m³',50,'number','Står på gasregningen'],['hpScop','Luft-til-vand, årsvirkningsgrad (SCOP)','',0.1,'number','Typisk 3,5'],['groundScop','Jordvarme, årsvirkningsgrad (SCOP)','',0.1,'number','Typisk 4,5'],
+    ['airCost','Luft-til-vand, pris inkl. installation','kr',1000,'number','Antagelse – ret til et rigtigt tilbud'],['airLife','Luft-til-vand, levetid','år',1],
+    ['groundCost','Jordvarme, pris inkl. boring/slanger','kr',1000,'number','Antagelse – ret til et rigtigt tilbud'],['groundLife','Jordvarme, levetid','år',1],
+    ['hpService','Service på varmepumpe','kr/år',100],['hpGrant','Tilskud til varmepumpe','kr',1000],
+  ]],
+  ['Gas i dag',[
+    ['gasSupplier','Gaspris fra gasleverandør inkl. moms','kr/m³',0.1,'number','Fra gasleverandørens regning – foreløbig anslået'],['evidaVar','Evida pr. m³ (distribution og afgifter) inkl. moms','kr/m³',0.01,'number','Fra Evida-regningen 2026'],
+    ['evidaFixed','Evida faste betalinger inkl. moms','kr/år',10,'number','Kapacitet, grundpris og måler'],['boilerService','Service på gasfyr','kr/år',100],
   ]],
   ['Business case',[
     ['years','Levetid','år',1],['priceGrowth','Elprisstigning efter 2026','% pr. år',0.5],['degradation','Panelernes ydelsestab','% pr. år',0.1],
@@ -854,6 +863,62 @@ function renderPrices(){
 }
 
 
+
+/* ---------- varme: gas mod varmepumpe ---------- */
+let HX=null,hxKey='';
+function heatData(){
+  const key=JSON.stringify(S)+R.today;if(HX&&hxKey===key)return HX;
+  const r=S.discount/100,on='2000-01-01';
+  const kwhOf=scop=>S.gasM3*11*0.95/Math.max(1,scop);
+  const run=pm=>{const o=pm===1?{}:{_pm:pm};
+    const b0=scenarioBill({hpStart:'',...o}),bA=scenarioBill({hpStart:on,...o}),bG=scenarioBill({hpStart:on,hpScop:S.groundScop,...o});
+    return{elA:bA.bill-b0.bill,elG:bG.bill-b0.bill,elAnoSol:bA.base-b0.base,elGnoSol:bG.base-b0.base}};
+  const gasYear=gm=>S.evidaFixed+S.gasM3*(S.evidaVar+S.gasSupplier*gm)+S.boilerService;
+  const capA=annuity(Math.max(0,S.airCost-S.hpGrant),S.airLife,r),capG=annuity(Math.max(0,S.groundCost-S.hpGrant),S.groundLife,r);
+  const base=run(1);
+  const sens=[0.7,1,1.3].map(pm=>{const x=pm===1?base:run(pm);return[0.7,1,1.3].map(gm=>({pm,gm,gas:gasYear(gm),A:capA+x.elA+S.hpService,G:capG+x.elG+S.hpService}))});
+  HX={kwhA:kwhOf(S.hpScop),kwhG:kwhOf(S.groundScop),base,gas:gasYear(1),capA,capG,sens};hxKey=key;return HX;
+}
+function renderHeat(){
+  const v=$('#v-varme');
+  if(!(S.gasM3>0)){v.innerHTML='<div class="panel"><p>Skriv dit gasforbrug under <a href="#indstillinger">Mit anlæg</a> for at se sammenligningen.</p></div>';return}
+  v.innerHTML='<div class="panel"><p class="muted">Regner…</p></div>';
+  setTimeout(()=>{
+  const H=heatData(),b=H.base;
+  const A=H.capA+b.elA+S.hpService,G=H.capG+b.elG+S.hpService,gas=H.gas;
+  const nA=Math.max(0,S.airCost-S.hpGrant),nG=Math.max(0,S.groundCost-S.hpGrant);
+  const runA=gas-(b.elA+S.hpService),runG=gas-(b.elG+S.hpService); // besparelse før kapitalomkostning
+  const yrs=(n,s)=>s>0?nf(n/s,1)+' år':'aldrig';
+  const cls=x=>x<0?'neg':'pos';
+  v.innerHTML=`
+  <div class="panel prose" style="max-width:none">
+    <div class="panel-head"><h2>Varme: gas mod varmepumpe</h2><p>Årlig omkostning ved ${nf(S.gasM3)} m³ gas om året</p></div>
+    <p class="small">Varmepumpens strømforbrug regnes time for time med dine solceller og dit batteri og med elafgift som fra 2028. Investeringen fordeles over levetiden med ${nf(S.discount,1)} % rente (annuitet), så alle tre kan sammenlignes som en udgift pr. år.</p>
+    <p class="small"><span class="pill warn">Foreløbigt</span> Gaspris fra gasleverandøren (${krk(S.gasSupplier).replace('/kWh','/m³')}) og priserne på varmepumperne er antagelser. Ret dem under <a href="#indstillinger">Mit anlæg</a>, når du har gasleverandørens regning og tilbud på varmepumper. Sol og forbrug er stadig simuleret.</p>
+  </div>
+  <div class="tscroll"><table>
+    <thead><tr><th>Pr. år</th><th>Gasfyr i dag</th><th>Luft-til-vand</th><th>Jordvarme</th></tr></thead>
+    <tbody>
+      <tr><td class="txt">Investering fordelt over levetiden</td><td>–</td><td>${kr(H.capA)}</td><td>${kr(H.capG)}</td></tr>
+      <tr><td class="txt">Faste betalinger til Evida</td><td>${kr(S.evidaFixed)}</td><td>–</td><td>–</td></tr>
+      <tr><td class="txt">Gas (${nf(S.gasM3)} m³) / ekstra strøm</td><td>${kr(S.gasM3*(S.evidaVar+S.gasSupplier))}</td><td>${kr(b.elA)} <span class="muted small">(${nf(H.kwhA)} kWh)</span></td><td>${kr(b.elG)} <span class="muted small">(${nf(H.kwhG)} kWh)</span></td></tr>
+      <tr><td class="txt">Service</td><td>${kr(S.boilerService)}</td><td>${kr(S.hpService)}</td><td>${kr(S.hpService)}</td></tr>
+    </tbody>
+    <tfoot><tr><td class="txt">I alt pr. år</td><td>${kr(gas)}</td><td>${kr(A)}</td><td>${kr(G)}</td></tr>
+      <tr><td class="txt">Besparelse pr. år mod gas</td><td>–</td><td class="${cls(gas-A)}">${kr(gas-A)}</td><td class="${cls(gas-G)}">${kr(gas-G)}</td></tr>
+      <tr><td class="txt">Simpel tilbagebetalingstid</td><td>–</td><td>${yrs(nA,runA)}</td><td>${yrs(nG,runG)}</td></tr></tfoot>
+  </table></div>
+  <div class="facts" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr))">
+    <div><div class="l">Solcellernes bidrag til varmepumpen</div><div class="v">${kr(b.elAnoSol-b.elA)} / år</div><div class="h">Luft-til-vand: strømmen ville koste ${kr(b.elAnoSol)} uden solceller og batteri</div></div>
+    <div><div class="l">Investering efter tilskud</div><div class="v">${kr(nA)} / ${kr(nG)}</div><div class="h">Luft-til-vand / jordvarme · levetid ${nf(S.airLife)} / ${nf(S.groundLife)} år</div></div>
+  </div>
+  <div class="grid2">${[['Luft-til-vand','A'],['Jordvarme','G']].map(([t,k])=>`<div class="panel"><div class="panel-head"><h2>${t}: besparelse pr. år</h2><p>Ved andre gas- og elpriser</p></div>
+    <div class="tscroll"><table><thead><tr><th>Elpris ↓ · gaspris →</th><th>−30 %</th><th>Som nu</th><th>+30 %</th></tr></thead><tbody>
+    ${H.sens.map(row=>`<tr><td class="txt">${row[0].pm===1?'Som nu':(row[0].pm<1?'−30 %':'+30 %')+' spotpris'}</td>${row.map(c=>{const sv=c.gas-c[k];return`<td><span class="pill ${sv>=0?'good':'crit'}">${kr(sv)}</span></td>`}).join('')}</tr>`).join('')}
+    </tbody></table></div><p class="small muted">Grøn = varmepumpen er billigere end gas pr. år, med investeringen fordelt over levetiden.</p></div>`).join('')}</div>`;
+  },20);
+}
+
 /* ---------- regnskab: uden anlæg / kun solceller / faktisk ---------- */
 let ledPer='month';
 const PER={day:'Dag',week:'Uge',month:'Måned',year:'År'};
@@ -916,6 +981,14 @@ function scenario(over){
   finally{Object.assign(S,keep);delete S._pm;delete S._pvm}
   return gain;
 }
+function scenarioBill(over){ // faktisk elregning (købt − solgt) sidste 12 mdr. med elafgift som fra 2028
+  const keep={...S};Object.assign(S,over,{sellStart:'',ea2024:keep.ea2028,ea2025:keep.ea2028,ea2026:keep.ea2028});
+  const t=dnOf(new Date());let soc=0,bill=0,base=0;
+  try{for(let dn=t-365;dn<t;dn++){const day=genDay(dn,dn);const a=simAI(day,soc,usableCap(t),false);soc=a.soc;bill+=a.cost;for(let h=0;h<24;h++)base+=(day.load[h]+a.ev[h])*day.buy[h]}}
+  finally{Object.assign(S,keep);delete S._pm;delete S._pvm}
+  return{bill,base};
+}
+const annuity=(c,n,r)=>r>0?c*r/(1-Math.pow(1+r,-n)):c/n;
 const pvFactor=(n)=>{const r=S.discount/100;return r>0?(1-Math.pow(1+r,-n))/r:n};
 let EX=null,exKey='',exHp=false;
 const scen=x=>scenario(exHp?{hpStart:'2000-01-01',...x}:{hpStart:'',...x});
@@ -1013,7 +1086,7 @@ function renderSettings(){
 }
 
 /* ---------- routing ---------- */
-const VIEWS={regnskab:renderLedger,udvid:renderExpand,overblik:renderOverview,okonomi:renderEconomy,styring:renderControl,priser:renderPrices,indstillinger:renderSettings};
+const VIEWS={varme:renderHeat,regnskab:renderLedger,udvid:renderExpand,overblik:renderOverview,okonomi:renderEconomy,styring:renderControl,priser:renderPrices,indstillinger:renderSettings};
 let R=null,current=null;
 function route(){
   let h=location.hash.replace('#','');if(!VIEWS[h])h='overblik';current=h;
