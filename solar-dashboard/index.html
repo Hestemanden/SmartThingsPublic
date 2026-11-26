@@ -202,7 +202,7 @@ function ranges(hours){ // [1,2,3,17] -> "01–04, 17–18"
 /* ---------- settings ---------- */
 const DEFAULTS={
   name:'Mit anlæg', inverter:'Solplanet-inverter styret af SunMate.io', installDate:'2024-04-01', sellStart:'', area:'DK2',
-  investment:135000, kwp:10, battKwh:10, battKw:5, eff:92, battDeg:2, invKw:10, oversize:150, gridCharge:1, battToGrid:1, noBattForEv:0,
+  investment:135000, kwp:10, battKwh:10, battKw:5, eff:92, battDeg:2, invKw:10, oversize:150, gridCharge:1, battToGrid:1, noBattForEv:0, minSoc:5, maxSoc:100, oldMinSoc:0, minSocChanged:'',
   houseKwh:4500, evKm:15000, evKwhKm:0.18, evKw:11,
   handel:0.06, energinet:0.14, salgsGebyr:0.03,
   tLowW:0.13, tHighW:0.39, tPeakW:1.17, tLowS:0.13, tHighS:0.20, tPeakS:0.52,
@@ -216,6 +216,8 @@ const FIELDS=[
     ['installDate','Taget i brug','',null,'date'],['sellStart','Salg af el startet','',null,'date','Før denne dato giver overskudsstrøm ingen betaling. Tom = fra start'],['investment','Samlet investering','kr',1000,'number','Inkl. montering, batteri og inverter'],
     ['kwp','Solcelleeffekt','kWp',0.1],['battKwh','Batteri, kapacitet','kWh',0.5,'number','0 hvis du ikke har batteri'],['battKw','Batteri, maks. effekt','kW',0.5],['eff','Batteri, virkningsgrad (tur/retur)','%',1],['battDeg','Batteri, kapacitetstab','% pr. år',0.1,'number','80 % efter 12–15 år svarer til ca. 1,5 %'],
     ['gridCharge','Må batteriet lades fra nettet? (1 = ja, 0 = nej)','',1,'number','Sæt 0 kun hvis netopladning er slået fra i appen'],['battToGrid','Må batteriet sælge til nettet? (1 = ja, 0 = nej)','',1,'number','0 mens "Stop batteriafladning til elnet" er slået til i SunMate'],
+    ['minSoc','Batteri, minimal afladning (reserve)','%',1,'number','Det batteriet ikke må gå under, fx til nødstrøm'],['maxSoc','Batteri, maksimal opladning','%',1],
+    ['oldMinSoc','Tidligere reserve','%',1,'number','Bruges før datoen herunder. 0 = ingen'],['minSocChanged','Reserven blev ændret','',null,'date'],
     ['noBattForEv','Brug ikke batteriet, når bilen lader (1 = ja, 0 = nej)','',1,'number','Som SunMate-reglen "Lad ikke bil med batteri"'],
     ['invKw','Inverter, effekt','kW',0.5],['oversize','Inverter, tilladt overdimensionering','%',5,'number','Hvor mange kWp paneler inverteren må have i forhold til sin effekt'],
   ]],
@@ -246,6 +248,7 @@ function loadSettings(){try{const j=JSON.parse(localStorage.getItem('solcelle-se
 function saveSettings(){try{const o={...S};delete o._custom;localStorage.setItem('solcelle-settings',JSON.stringify(o))}catch(e){}}
 
 /* ---------- model: weather, prices, consumption ---------- */
+const usableCap=dn=>{if(!(S.battKwh>0))return 0;const mn=(S.minSocChanged&&S.oldMinSoc>0&&dn<dnISO(S.minSocChanged))?S.oldMinSoc:S.minSoc;return Math.max(0,S.battKwh*(Math.min(100,S.maxSoc)-mn)/100)};
 let PR=null; // rigtige spotpriser fra prices.json
 const realDay=dn=>{if(!PR)return null;const d=PR.areas[S.area]||PR.areas.DK2;return d[dn-PR.startDn]||null};
 const calib=m=>PR&&PR.calib?PR.calib[m]:1;
@@ -406,14 +409,15 @@ function runAll(){
   const out={d0,d1,today,months,daily,years,todayDetail:null,tomorrowDetail:null};
   for(let dn=d0;dn<=end;dn++){
     const day=genDay(dn,d0);
-    const yrs=(dn-d0)/365.25,cap=S.battKwh>0?Math.max(0,S.battKwh*0.95*(1-S.battDeg/100*yrs)):0;
+    const yrs=(dn-d0)/365.25,cap=usableCap(dn)*(1-S.battDeg/100*yrs);
     const det=dn===today||dn===today+1;
     const a=simAI(day,socA,cap,det);let o=simOpt(day,socO,cap,det);
     if(Math.abs(socA-socO)<0.05&&planScore(a,day)<planScore(o,day))o=a; // den bedste kendte plan er aldrig dårligere end inverterens egen
-    socA=a.soc;socO=o.soc;
+    const sA0=socA,sO0=socO;socA=a.soc;socO=o.soc;
     const evOptCost=o.ev.reduce((s,q,h)=>s+q*day.buy[h],0),evAiCost=a.ev.reduce((s,q,h)=>s+q*day.buy[h],0);
     let base=0;for(let h=0;h<24;h++)base+=(day.load[h]+o.ev[h])*day.buy[h];
-    const gA=base-a.cost,gO=base-o.cost;
+    const sv=day.buy.reduce((x,y)=>x+y)/24*Math.sqrt(S.eff/100)*0.8; // værdi af energi, der står i batteriet
+    const gA=base-a.cost+(a.soc-sA0)*sv,gO=base-o.cost+(o.soc-sO0)*sv;
     if(det){const d={day,a,o,base,gA,gO,cap};if(dn===today)out.todayDetail=d;else out.tomorrowDetail=d}
     if(dn>d1)continue;
     const key=day.y*12+day.m;let mo=months.get(key);
@@ -844,7 +848,7 @@ function scenario(over){
   const keep={...S};
   Object.assign(S,over,{sellStart:'',ea2024:keep.ea2028,ea2025:keep.ea2028,ea2026:keep.ea2028});
   const t=dnOf(new Date());let soc=0,gain=0;
-  try{for(let dn=t-365;dn<t;dn++){const day=genDay(dn,dn);const cap=S.battKwh>0?S.battKwh*0.95:0;
+  try{for(let dn=t-365;dn<t;dn++){const day=genDay(dn,dn);const cap=usableCap(t);
     const a=simAI(day,soc,cap,false);soc=a.soc;const evO=evPlan(day,true);let base=0;
     for(let h=0;h<24;h++)base+=(day.load[h]+evO[h])*day.buy[h];gain+=base-a.cost}}
   finally{Object.assign(S,keep);delete S._pm;delete S._pvm}
