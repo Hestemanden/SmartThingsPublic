@@ -202,7 +202,7 @@ function ranges(hours){ // [1,2,3,17] -> "01–04, 17–18"
 /* ---------- settings ---------- */
 const DEFAULTS={
   name:'Mit anlæg', inverter:'Solplanet-inverter styret af SunMate.io', installDate:'2024-04-01', sellStart:'', area:'DK2',
-  investment:135000, kwp:10, battKwh:10, battKw:5, eff:92,
+  investment:135000, kwp:10, battKwh:10, battKw:5, eff:92, battDeg:2, invKw:10, oversize:150,
   houseKwh:4500, evKm:15000, evKwhKm:0.18, evKw:11,
   handel:0.06, energinet:0.14, salgsGebyr:0.03,
   tLowW:0.13, tHighW:0.39, tPeakW:1.17, tLowS:0.13, tHighS:0.20, tPeakS:0.52,
@@ -214,7 +214,8 @@ const FIELDS=[
   ['Anlægget',[
     ['name','Navn','',null,'text'],['inverter','Inverter / styring','',null,'text'],
     ['installDate','Taget i brug','',null,'date'],['sellStart','Salg af el startet','',null,'date','Før denne dato giver overskudsstrøm ingen betaling. Tom = fra start'],['investment','Samlet investering','kr',1000,'number','Inkl. montering, batteri og inverter'],
-    ['kwp','Solcelleeffekt','kWp',0.1],['battKwh','Batteri, kapacitet','kWh',0.5,'number','0 hvis du ikke har batteri'],['battKw','Batteri, maks. effekt','kW',0.5],['eff','Batteri, virkningsgrad (tur/retur)','%',1],
+    ['kwp','Solcelleeffekt','kWp',0.1],['battKwh','Batteri, kapacitet','kWh',0.5,'number','0 hvis du ikke har batteri'],['battKw','Batteri, maks. effekt','kW',0.5],['eff','Batteri, virkningsgrad (tur/retur)','%',1],['battDeg','Batteri, kapacitetstab','% pr. år',0.1,'number','80 % efter 12–15 år svarer til ca. 1,5 %'],
+    ['invKw','Inverter, effekt','kW',0.5],['oversize','Inverter, tilladt overdimensionering','%',5,'number','Hvor mange kWp paneler inverteren må have i forhold til sin effekt'],
   ]],
   ['Forbrug',[
     ['houseKwh','Husets forbrug pr. år (uden bil)','kWh',100],['evKm','Bilens kørsel pr. år','km',500,'number','0 hvis du ikke har elbil'],['evKwhKm','Bilens forbrug','kWh/km',0.01],['evKw','Ladeboks, effekt','kW',0.1],
@@ -380,7 +381,7 @@ function runAll(){
   const out={d0,d1,today,months,daily,years,todayDetail:null,tomorrowDetail:null};
   for(let dn=d0;dn<=end;dn++){
     const day=genDay(dn,d0);
-    const yrs=(dn-d0)/365.25,cap=S.battKwh>0?Math.max(0,S.battKwh*0.95*(1-0.02*yrs)):0;
+    const yrs=(dn-d0)/365.25,cap=S.battKwh>0?Math.max(0,S.battKwh*0.95*(1-S.battDeg/100*yrs)):0;
     const det=dn===today||dn===today+1;
     const a=simAI(day,socA,cap,det),o=simOpt(day,socO,cap,det);socA=a.soc;socO=o.soc;
     const evOptCost=o.ev.reduce((s,q,h)=>s+q*day.buy[h],0),evAiCost=a.ev.reduce((s,q,h)=>s+q*day.buy[h],0);
@@ -679,7 +680,7 @@ function renderEconomy(){
       <p>Gevinsten er forskellen mellem hvad strømmen ville have kostet uden anlæg, og hvad du faktisk betaler for køb minus hvad du får for salg. Uden anlæg antages bilen stadig at lade om natten i de billigste timer, så gevinsten ikke pustes op.</p>
       <p>Købspris = (spotpris + elhandlerens tillæg + nettarif + Energinet-tarif + elafgift) × 1,25 moms. Salgspris = spotpris − salgsgebyr.</p>
       <p>Elafgiften er sat ned til ${krk(S.ea2026,3)} i 2026–2027. Det gør strøm du selv bruger mindre værd og forlænger tilbagebetalingstiden. Fra 2028 regnes med ${krk(S.ea2028,3)}. Ret det under <a href="#indstillinger">Mit anlæg</a>.</p>
-      <p>Fremtiden regnes med ${nf(S.priceGrowth,1)} % årlig elprisstigning, ${nf(S.degradation,1)} % årligt tab i panelerne, 2 % årligt kapacitetstab i batteriet${S.invYear<S.years?` og en ny inverter efter ${S.invYear} år`:''}.</p>
+      <p>Fremtiden regnes med ${nf(S.priceGrowth,1)} % årlig elprisstigning, ${nf(S.degradation,1)} % årligt tab i panelerne, ${nf(S.battDeg,1)} % årligt kapacitetstab i batteriet${S.invYear<S.years?` og en ny inverter efter ${S.invYear} år`:''}.</p>
       <p>${R.loan.pmt?`Lånet regnes med ${S.loanPmt>0?`fast ydelse på ${kr(S.loanPmt)} pr. måned`:'annuitetsydelse'} og ${nf(S.loanComp)} rentetilskrivninger om året. Renten er variabel, så ret den under Mit anlæg, når banken ændrer den. Afdragene er en del af investeringen, som allerede er trukket fra. Renterne er en ekstra omkostning og trækkes fra med ${nf(100-S.taxDed)} % efter rentefradrag, så anlægget først er betalt tilbage, når gevinsten også har dækket renterne. Forrentningen (IRR) gælder selve investeringen, før lånet.`:'Der er ikke lagt et lån ind. Har du lånt til anlægget, så skriv lånet ind under <a href="#indstillinger">Mit anlæg</a>.'}</p>
     </div></details>
   </div>
@@ -828,9 +829,10 @@ function expandData(){
   const sizes=[0,5,10,15,20,25,30];if(!sizes.includes(S.battKwh))sizes.push(S.battKwh);sizes.sort((a,b)=>a-b);
   const batt=sizes.map(k=>({k,g:scenario({battKwh:k})}));
   const base=batt.find(b=>b.k===S.battKwh).g;
-  const pvs=[-4,0,2,4,6,8].map(d=>Math.max(0,S.kwp+d)).filter((v,i,a)=>a.indexOf(v)===i).map(k=>({k,g:k===S.kwp?base:scenario({kwp:k})}));
+  const maxKwp=S.invKw*S.oversize/100;let ks=[-4,0,2,4,6,8].map(d=>+Math.max(0,S.kwp+d).toFixed(2)).filter(k=>k<=maxKwp+1e-9||k<=S.kwp);if(maxKwp>S.kwp+0.05&&!ks.some(k=>Math.abs(k-maxKwp)<0.3))ks.push(+maxKwp.toFixed(2));ks=[...new Set(ks)].sort((a,b)=>a-b);
+  const pvs=ks.map(k=>({k,g:k===S.kwp?base:scenario({kwp:k})}));
   const noBatt=batt.find(b=>b.k===0).g,noPv=scenario({kwp:0});
-  EX={batt,pvs,base,noBatt,noPv};exKey=key;return EX;
+  EX={batt,pvs,base,noBatt,noPv,maxKwp};exKey=key;return EX;
 }
 let exBattAdd=5,exBattPrice=30000,exPvAdd=4,exPvPrice=25000;
 function renderExpand(){
@@ -859,7 +861,7 @@ function renderExpand(){
     <div class="panel">
       <div class="panel-head"><h2>Antal solpaneler</h2><p>Gevinst pr. år ved forskellig solcelleeffekt</p></div>
       <div class="chart" id="exPv"></div>
-      <p class="small muted">Inverteren er på 12 kW. Over ca. 15–18 kWp kan den begrænse produktionen på solrige dage. Det er ikke regnet med.</p>
+      <p class="small muted">Inverteren på ${nf(S.invKw,1)} kW må have op til ${nf(S.oversize)} % paneler, altså ${nf(E.maxKwp,1)} kWp. Du kan altså udvide med ca. ${nf(Math.max(0,E.maxKwp-S.kwp),1)} kWp uden ny inverter.</p>
     </div>
   </div>
   <div class="panel">
@@ -886,7 +888,7 @@ function renderExpand(){
   const calc=()=>{
     exBattAdd=+$('#exBattAdd').value||0;exBattPrice=+$('#exBattPrice').value||0;exPvAdd=+$('#exPvAdd').value||0;exPvPrice=+$('#exPvPrice').value||0;
     const gB=scenario({battKwh:S.battKwh+exBattAdd})-E.base,gP=scenario({kwp:S.kwp+exPvAdd})-E.base;
-    $('#exBattRes').innerHTML=verdict(gB,exBattPrice,LIFE_BATT);$('#exPvRes').innerHTML=verdict(gP,exPvPrice,LIFE_PV)};
+    $('#exBattRes').innerHTML=verdict(gB,exBattPrice,LIFE_BATT);$('#exPvRes').innerHTML=verdict(gP,exPvPrice,LIFE_PV)+(S.kwp+exPvAdd>E.maxKwp+0.01?`<p class="small"><span class="pill warn">! Over inverterens grænse</span> ${nf(S.kwp+exPvAdd,1)} kWp er mere end de ${nf(E.maxKwp,1)} kWp, inverteren må have. Det kræver en større inverter eller en ekstra.</p>`:'')};
   let t;v.querySelectorAll('input').forEach(i=>i.addEventListener('input',()=>{clearTimeout(t);t=setTimeout(calc,300)}));calc();
   },20);
 }
