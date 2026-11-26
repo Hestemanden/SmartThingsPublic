@@ -202,7 +202,7 @@ function ranges(hours){ // [1,2,3,17] -> "01–04, 17–18"
 /* ---------- settings ---------- */
 const DEFAULTS={
   name:'Mit anlæg', inverter:'Solplanet-inverter styret af SunMate.io', installDate:'2024-04-01', sellStart:'', area:'DK2',
-  investment:135000, kwp:10, battKwh:10, battKw:5, eff:92, battDeg:2, invKw:10, oversize:150,
+  investment:135000, kwp:10, battKwh:10, battKw:5, eff:92, battDeg:2, invKw:10, oversize:150, gridCharge:1, battToGrid:1,
   houseKwh:4500, evKm:15000, evKwhKm:0.18, evKw:11,
   handel:0.06, energinet:0.14, salgsGebyr:0.03,
   tLowW:0.13, tHighW:0.39, tPeakW:1.17, tLowS:0.13, tHighS:0.20, tPeakS:0.52,
@@ -215,6 +215,7 @@ const FIELDS=[
     ['name','Navn','',null,'text'],['inverter','Inverter / styring','',null,'text'],
     ['installDate','Taget i brug','',null,'date'],['sellStart','Salg af el startet','',null,'date','Før denne dato giver overskudsstrøm ingen betaling. Tom = fra start'],['investment','Samlet investering','kr',1000,'number','Inkl. montering, batteri og inverter'],
     ['kwp','Solcelleeffekt','kWp',0.1],['battKwh','Batteri, kapacitet','kWh',0.5,'number','0 hvis du ikke har batteri'],['battKw','Batteri, maks. effekt','kW',0.5],['eff','Batteri, virkningsgrad (tur/retur)','%',1],['battDeg','Batteri, kapacitetstab','% pr. år',0.1,'number','80 % efter 12–15 år svarer til ca. 1,5 %'],
+    ['gridCharge','Må batteriet lades fra nettet? (1 = ja, 0 = nej)','',1,'number','SunMates indstilling grid_charge'],['battToGrid','Må batteriet sælge til nettet? (1 = ja, 0 = nej)','',1,'number','SunMates indstilling battery_to_grid'],
     ['invKw','Inverter, effekt','kW',0.5],['oversize','Inverter, tilladt overdimensionering','%',5,'number','Hvor mange kWp paneler inverteren må have i forhold til sin effekt'],
   ]],
   ['Forbrug',[
@@ -309,7 +310,7 @@ function simAI(day,soc,cap,detail){
   const b=day.buy,mean=b.reduce((x,y)=>x+y)/24;
   const night=[0,1,2,3,4,5].sort((x,y)=>b[x]-b[y]).slice(0,3);
   const pvSum=day.pv.reduce((x,y)=>x+y),cSum=day.load.reduce((x,y)=>x+y)+day.evNeed;
-  const gridCharge=cap>0&&pvSum<cSum*0.8&&(Math.max(...b)-Math.min(...b))*S.eff/100>0.5;
+  const gridCharge=!!S.gridCharge&&cap>0&&pvSum<cSum*0.8&&(Math.max(...b)-Math.min(...b))*S.eff/100>0.5;
   const target=cap*0.8;
   const res=acc(detail);
   for(let h=0;h<24;h++){
@@ -327,8 +328,24 @@ function simAI(day,soc,cap,detail){
   }
   return res.done(soc,ev);
 }
+/* Optimal plan når batteriet kun må bruge sol og kun dække husets forbrug:
+   lad al overskudssol, og brug energien i de dyreste timer, hvor den rækker */
+function simOptSelf(day,soc0,cap,detail,ev){
+  const ec=Math.sqrt(S.eff/100),ed=ec,res=acc(detail);
+  const c=day.load.map((l,h)=>l+ev[h]),ch=new Array(24).fill(0),dis=new Array(24).fill(0),soc=new Array(24);
+  let x=soc0;for(let h=0;h<24;h++){const sur=Math.max(0,day.pv[h]-c[h]);const q=Math.min(sur*ec,S.battKw*ec,cap-x);ch[h]=Math.max(0,q);x+=ch[h];soc[h]=x}
+  const mean=day.buy.reduce((a,b)=>a+b)/24,term=mean*0.8;
+  const order=[...Array(24).keys()].filter(h=>c[h]>day.pv[h]&&day.buy[h]>term).sort((a,b)=>day.buy[b]-day.buy[a]);
+  for(const h of order){let room=Infinity;for(let t=h;t<24;t++)room=Math.min(room,soc[t]);
+    const want=Math.min(c[h]-day.pv[h],S.battKw)/ed,take=Math.max(0,Math.min(want,room));if(take<=1e-6)continue;
+    dis[h]=take;for(let t=h;t<24;t++)soc[t]-=take}
+  for(let h=0;h<24;h++){const e=ch[h]-dis[h];const net=day.pv[h]-c[h]-ch[h]/ec+dis[h]*ed;let imp=0,exp=0,cur=0;
+    if(net<0)imp=-net;else if(day.sell[h]<0)cur=net;else exp=net;res.add(day,h,c[h],ev[h],e,soc[h],imp,exp,cur)}
+  return res.done(soc[23],ev);
+}
 /* Optimal plan: dynamisk programmering med kendte døgnpriser */
 function simOpt(day,soc0,cap,detail){
+  if(!S.gridCharge&&!S.battToGrid&&cap>=0.2)return simOptSelf(day,soc0,cap,detail,evPlan(day,true));
   const ec=Math.sqrt(S.eff/100),ed=ec;
   const ev=evPlan(day,true);
   const res=acc(detail);
