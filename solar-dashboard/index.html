@@ -265,6 +265,7 @@ function saveSettings(){try{const o={...S};delete o._custom;localStorage.setItem
 /* ---------- model: weather, prices, consumption ---------- */
 const usableCap=dn=>{if(!(S.battKwh>0))return 0;const mn=(S.minSocChanged&&S.oldMinSoc>0&&dn<dnISO(S.minSocChanged))?S.oldMinSoc:S.minSoc;const nb=(S.netbalStart&&dn>=dnISO(S.netbalStart))?(+S.netbalMargin||0):0;return Math.max(0,S.battKwh*(Math.min(100,S.maxSoc)-nb-mn-nb)/100)};
 let PR=null; // rigtige spotpriser fra prices.json
+let MA=null; // målte dage fra maalt.json (SunMate/Solplanet)
 const realDay=dn=>{if(!PR)return null;const d=PR.areas[S.area]||PR.areas.DK2;return d[dn-PR.startDn]||null};
 const calib=m=>PR&&PR.calib?PR.calib[m]:1;
 const hasTomorrow=()=>PR?!!realDay(dnOf(new Date())+1):new Date().getHours()>=13;
@@ -437,7 +438,8 @@ function runAll(){
     const sv=day.buy.reduce((x,y)=>x+y)/24*Math.sqrt(S.eff/100)*0.8; // værdi af energi, der står i batteriet
     const gA=base-a.cost+(a.soc-sA0)*sv,gO=base-o.cost+(o.soc-sO0)*sv;
     if(dn<=today){let lb=0,ls=0;for(let h=0;h<24;h++){const c=day.load[h]+a.ev[h],n=day.pv[h]-c;lb+=c*day.buy[h];ls+=n<0?-n*day.buy[h]:-n*day.sell[h]}
-      ledger.push({dn,base:lb,sol:ls,act:a.cost-(a.soc-sA0)*sv,pv:a.pv,cons:a.cons,imp:a.imp,exp:a.exp})}
+      const m=MA&&MA.get(dn);
+      ledger.push(m&&m.hours>=20?{dn,base:m.base,sol:m.sol,act:m.act,pv:m.pv,cons:m.cons,imp:m.imp,exp:m.exp,maalt:true}:{dn,base:lb,sol:ls,act:a.cost-(a.soc-sA0)*sv,pv:a.pv,cons:a.cons,imp:a.imp,exp:a.exp})}
     if(det){const d={day,a,o,base,gA,gO,cap};if(dn===today)out.todayDetail=d;else out.tomorrowDetail=d}
     if(dn>d1)continue;
     const key=day.y*12+day.m;let mo=months.get(key);
@@ -939,12 +941,13 @@ function ledgerGroups(per){
 function renderLedger(){
   const v=$('#v-regnskab');const L=ledgerGroups(ledPer);
   const T=R.ledger.reduce((a,r)=>({base:a.base+r.base,sol:a.sol+r.sol,act:a.act+r.act}),{base:0,sol:0,act:0});
-  const sim=true; // skiftes til målte data, når Solplanet/SunMate er koblet på
+  const nM=R.ledger.filter(r=>r.maalt).length,sim=nM<R.ledger.length;
   v.innerHTML=`
   <div class="panel prose" style="max-width:none">
     <div class="panel-head"><h2>Regnskab: kunne det betale sig?</h2><p>Fra ${fmtDate(R.d0)} til i dag</p></div>
     <p class="small">Hver periode regnes tre gange med samme forbrug, samme produktion og samme timepriser: <strong>uden anlæg</strong> (alt købt fra nettet), <strong>kun solceller</strong> (som hvis der ikke var batteri) og <strong>faktisk</strong> (købt minus solgt). Forskellene viser, hvad solcellerne og batteriet hver især har sparet.</p>
-    ${sim?'<p class="small"><span class="pill warn">Simuleret</span> Produktion og forbrug er simuleret, indtil Solplanet- eller SunMate-data er koblet på. Priserne er rigtige. Når målte data kommer, regnes regnskabet om på dem.</p>':''}
+    ${nM?`<p class="small"><span class="pill good">Målt</span> ${nM} af ${R.ledger.length} dage bygger på målte data fra SunMate (mindst 20 timer pr. dag).${sim?' Resten er simuleret.':''}</p>`:''}
+    ${sim&&!nM?'<p class="small"><span class="pill warn">Simuleret</span> Produktion og forbrug er simuleret, indtil Solplanet- eller SunMate-data er koblet på. Priserne er rigtige. Når målte data kommer, regnes regnskabet om på dem.</p>':''}
   </div>
   <div class="facts" style="grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr))">
     <div><div class="l">Elregning uden anlæg</div><div class="v">${kr(T.base)}</div><div class="h">Hvis alt var købt fra nettet</div></div>
@@ -1105,5 +1108,6 @@ let rw;window.addEventListener('resize',()=>{clearTimeout(rw);rw=setTimeout(()=>
 recompute(true);
 // personlige standardværdier (lån m.m.) ligger i personal.json, som kun udgives med dashboardet og ikke ligger i git
 fetch('personal.json',{cache:'no-cache'}).then(r=>r.ok?r.json():null).then(j=>{if(!j||typeof j!=='object')return;for(const k of Object.keys(DEFAULTS))if(k in j)DEFAULTS[k]=j[k];S=loadSettings();recompute(true)}).catch(()=>{});
+fetch('maalt.json',{cache:'no-cache'}).then(r=>r.ok?r.json():null).then(j=>{if(!j||!Array.isArray(j.days))return;MA=new Map(j.days.map(x=>[dnISO(x.d),x]));recompute(true)}).catch(()=>{});
 fetch('prices.json',{cache:'no-cache'}).then(r=>r.ok?r.json():null).then(j=>{if(!j||!j.areas)return;PR=j;PR.startDn=dnISO(j.start);calibrate();recompute(true)}).catch(()=>{});
 </script>
