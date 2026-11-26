@@ -199,7 +199,7 @@ function ranges(hours){ // [1,2,3,17] -> "01–04, 17–18"
 
 /* ---------- settings ---------- */
 const DEFAULTS={
-  name:'Mit anlæg', inverter:'Hybrid-inverter med AI-styring', installDate:'2024-04-01',
+  name:'Mit anlæg', inverter:'Solplanet-inverter styret af SunMate.io', installDate:'2024-04-01', area:'DK2',
   investment:135000, kwp:10, battKwh:10, battKw:5, eff:92,
   houseKwh:4500, evKm:15000, evKwhKm:0.18, evKw:11,
   handel:0.06, energinet:0.14, salgsGebyr:0.03,
@@ -217,6 +217,7 @@ const FIELDS=[
     ['houseKwh','Husets forbrug pr. år (uden bil)','kWh',100],['evKm','Bilens kørsel pr. år','km',500,'number','0 hvis du ikke har elbil'],['evKwhKm','Bilens forbrug','kWh/km',0.01],['evKw','Ladeboks, effekt','kW',0.1],
   ]],
   ['Elpris og afgifter (ekskl. moms)',[
+    ['area','Prisområde','',null,'text','DK1 = Jylland og Fyn · DK2 = Sjælland og øerne'],
     ['handel','Elhandlerens tillæg','kr/kWh',0.01],['energinet','Energinet-tarif','kr/kWh',0.01],['salgsGebyr','Gebyr ved salg','kr/kWh',0.01,'number','Trækkes fra spotprisen når du sælger'],
     ['tLowW','Nettarif vinter, lav (00–06)','kr/kWh',0.01],['tHighW','Nettarif vinter, høj','kr/kWh',0.01],['tPeakW','Nettarif vinter, spids (17–21)','kr/kWh',0.01],
     ['tLowS','Nettarif sommer, lav (00–06)','kr/kWh',0.01],['tHighS','Nettarif sommer, høj','kr/kWh',0.01],['tPeakS','Nettarif sommer, spids (17–21)','kr/kWh',0.01],
@@ -233,6 +234,13 @@ function loadSettings(){try{const j=JSON.parse(localStorage.getItem('solcelle-se
 function saveSettings(){try{const o={...S};delete o._custom;localStorage.setItem('solcelle-settings',JSON.stringify(o))}catch(e){}}
 
 /* ---------- model: weather, prices, consumption ---------- */
+let PR=null; // rigtige spotpriser fra prices.json
+const realDay=dn=>{if(!PR)return null;const d=PR.areas[S.area]||PR.areas.DK2;return d[dn-PR.startDn]||null};
+const calib=m=>PR&&PR.calib?PR.calib[m]:1;
+const hasTomorrow=()=>PR?!!realDay(dnOf(new Date())+1):new Date().getHours()>=13;
+function calibrate(){const t=dnOf(new Date()),sum=new Array(12).fill(0),n=new Array(12).fill(0);
+  for(let dn=t-365;dn<t;dn++){const d=realDay(dn);if(!d)continue;const m=dateOf(dn).getUTCMonth();for(const v of d){sum[m]+=v;n[m]++}}
+  PR.calib=sum.map((v,m)=>n[m]?(v/n[m])/(SPOT_M[m]*0.95):1)}
 const DIM=[31,28.25,31,30,31,30,31,31,30,31,30,31];
 const YIELD=[18,38,75,115,140,142,140,118,84,48,21,12];        // kWh pr. kWp pr. måned (DK)
 const SUNM=YIELD.map(v=>v/142);
@@ -257,14 +265,15 @@ function genDay(dn,installDn){
   const yrs=Math.max(0,(dn-installDn)/365.25);
   const degr=Math.pow(1-S.degradation/100,yrs);
   const pvDay=S.kwp*YIELD[m]/DIM[m]*clear*degr;
-  const yf=YEARF[y]??Math.pow(1+S.priceGrowth/100,y-2026);
+  const real=realDay(dn);
+  const yf=(PR&&y>=2026?Math.pow(1+S.priceGrowth/100,Math.max(0,y-2026)):(YEARF[y]??Math.pow(1+S.priceGrowth/100,y-2026)))*calib(m);
   const lvl=SPOT_M[m]*yf*(1.45-0.9*wind)*(dow===0||dow===6?0.88:1);
   const ea=elafgift(y);
   const loadDay=S.houseKwh/365*LSEAS[m]/1.0075;
   const spot=[],buy=[],sell=[],pv=[],load=[];
   for(let h=0;h<24;h++){
     let sp=lvl*PSHAPE[h]-0.55*SUNM[m]*(clear/1.55)*(0.4+wind)*(smax?sun[h]/smax:0)*yf+(r()-0.5)*0.06;
-    sp=Math.max(-0.6,sp);
+    sp=Math.max(-0.6,sp);if(real)sp=real[h];
     spot.push(sp);
     buy.push((sp+S.handel+tarif(h,m)+S.energinet+ea)*1.25);
     sell.push(sp-S.salgsGebyr);
@@ -414,7 +423,7 @@ function irr(f){let lo=-0.5,hi=0.5;if(npv(f,lo)*npv(f,hi)>0)return null;for(let 
 /* ---------- AI evaluation: skal du gribe ind? ---------- */
 function evaluate(R){
   const issues=[],checks=[];
-  const days=[['i dag',R.todayDetail],['i morgen',(new Date().getHours()>=13)?R.tomorrowDetail:null]].filter(x=>x[1]);
+  const days=[['i dag',R.todayDetail],['i morgen',hasTomorrow()?R.tomorrowDetail:null]].filter(x=>x[1]);
   let gap=0;
   for(const[lbl,D]of days){
     const{a,o,day,cap}=D;const g=Math.max(0,D.gO-D.gA);if(lbl==='i dag')gap=g;
@@ -437,6 +446,21 @@ function evaluate(R){
         issues.push({sev:'warn',key:'peak',when:lbl,title:`Batteriet er tomt før aftenens dyre timer ${lbl}`,
           text:`Inverteren bruger batteriet i løbet af dagen, så det er ${nf(sA/cap*100)} % fuldt kl. 17. Kl. 17–21 koster strømmen op til ${krk(peak)}. Den optimale plan gemmer ${nf(sO/cap*100)} %.`,
           do:'Sæt en batterireserve på ca. 50 % frem til kl. 17 (tidsstyret afladning) i inverterens app.',save:null})}
+  }
+  // samlet afvigelse i dag, når den ikke er forklaret af et konkret punkt
+  if(R.todayDetail&&gap>S.interveneKr&&!issues.some(i=>i.when==='i dag'&&i.sev==='crit')){
+    const D=R.todayDetail,A=D.a.hours,O=D.o.hours;
+    const gc=hs=>hs.filter(x=>x.e>0.05&&x.pv<0.05).reduce((s,x)=>s+x.e,0);
+    const gA=gc(A),gO=gc(O),gHours=O.filter(x=>x.e>0.05&&x.pv<0.05).map(x=>x.h);
+    const b2g=O.filter(x=>x.e<-0.05&&x.exp>0.05),b2gK=b2g.reduce((s,x)=>s+x.exp,0),b2gA=A.filter(x=>x.e<-0.05&&x.exp>0.05).reduce((s,x)=>s+x.exp,0);
+    const pk=hs=>hs.filter(x=>x.h>=17&&x.h<21).reduce((s,x)=>s+Math.max(0,-x.e),0),pA=pk(A),pO=pk(O);
+    const why=[],todo=[];
+    if(gO>gA+0.5){why.push(`den optimale plan lader ${nf(gO,1)} kWh fra nettet om natten, inverteren kun ${nf(gA,1)} kWh`);todo.push(`lad batteriet helt op fra nettet kl. ${ranges(gHours)}`)}
+    if(b2gK>b2gA+0.3){why.push(`den optimale plan sælger ${nf(b2gK,1)} kWh fra batteriet kl. ${ranges(b2g.map(x=>x.h))}, hvor salgsprisen er op til ${krk(Math.max(...b2g.map(x=>x.sell)))}`);todo.push('slå "batteri til net" til i de dyreste timer')}
+    if(pO>pA+0.5){why.push(`kl. 17–21 bruger den optimale plan ${nf(pO,1)} kWh fra batteriet, inverteren ${nf(pA,1)} kWh`);todo.push('gem mere batteri til kl. 17–21')}
+    issues.push({sev:'crit',key:'gap',when:'i dag',title:'Batteriet bruges ikke optimalt i dag',
+      text:`Med dagens priser er inverterens plan ${kr(gap)} dyrere end den optimale${why.length?': '+why.join('; '):''}.`,
+      do:todo.length?todo.join(', og ').replace(/^./,c=>c.toUpperCase())+' (tidsstyring i SunMate- eller Solplanet-appen).':'Tjek at SunMate står i spotpris-optimering for dit prisområde.',save:gap});
   }
   // 30 dage
   const eff=R.eff30;
@@ -536,7 +560,7 @@ function actionOf(x,cap){
   return null;
 }
 function hourWindow(){
-  const D=R.todayDetail,T=(new Date().getHours()>=13)?R.tomorrowDetail:null;
+  const D=R.todayDetail,T=hasTomorrow()?R.tomorrowDetail:null;
   const a=D.a.hours.map(x=>({...x,d:'i dag'})),o=D.o.hours;
   if(T){return{ai:a.concat(T.a.hours.map(x=>({...x,d:'i morgen'}))),opt:o.concat(T.o.hours),two:true}}
   return{ai:a,opt:o,two:false};
@@ -687,7 +711,7 @@ function renderControl(){
     <h2>Sådan vurderes AI'en</h2>
     <p>Dashboardet regner for hvert døgn en optimal plan ud fra de kendte timepriser, solprognosen og jeres forbrug. Planen bestemmer, hvornår batteriet skal lade fra sol eller net, hvornår det skal aflade, og hvornår bilen skal lade. Inverterens faktiske beslutninger sammenlignes med den plan.</p>
     <p>Ligger forskellen under ${kr(S.interveneKr)} pr. døgn, og er alle tjek grønne, kan du lade det køre automatisk. Ellers får du et konkret forslag til, hvad du skal ændre.</p>
-    <p class="muted small">Lige nu bruges eksempeldata, hvor inverterens adfærd er simuleret. Når dashboardet kobles til din inverter (${esc(S.inverter)}) og Energi Data Service, vises dine rigtige tal.</p>
+    <p class="muted small">${PR?'Elpriserne er rigtige spotpriser fra Energi Data Service. Solproduktion, forbrug og inverterens beslutninger er stadig simuleret':'Lige nu bruges eksempeldata, hvor inverterens adfærd er simuleret'}. Når dashboardet kobles til ${esc(S.inverter)}, vises dine rigtige tal.</p>
   </div>`;
   const tbl=$('#ctTable');const nowH=new Date().getHours();
   tbl.innerHTML=`<thead><tr><th>Kl.</th><th>Køb</th><th>Salg</th><th>Sol</th><th>Forbrug</th><th>AI: batteri</th><th>AI: bil</th><th>Optimal</th><th>Vurdering</th></tr></thead><tbody>${W.ai.map((x,i)=>{const o=W.opt[i];const a=actionOf(x),b=actionOf(o);
@@ -725,7 +749,7 @@ function renderPrices(){
     <div><div class="l">Dyrest ${W.two?'i dag/i morgen':'i dag'}</div><div class="v">${krk(maxB.buy)}</div><div class="h">kl. ${hh(maxB.h)} ${maxB.d}</div></div>
   </div>
   <div class="panel">
-    <div class="panel-head"><h2>Køb og salg time for time</h2><p>${W.two?'Morgendagens priser er offentliggjort':'Morgendagens priser kommer ca. kl. 13'}</p></div>
+    <div class="panel-head"><h2>Køb og salg time for time</h2><p>${PR?`Spotpriser ${esc(S.area)} fra Energi Data Service · `:'Simulerede priser · '}${W.two?'morgendagens priser er offentliggjort':'morgendagens priser kommer ca. kl. 13'}</p></div>
     ${legend([['--s-buy','Købspris',1],['--s-sell','Salgspris',1],['--s-batt','Batteri'],['--s-car','Bil lader']])}
     <div class="chart" id="prChart"></div>
   </div>
@@ -763,7 +787,7 @@ function renderSettings(){
   <div class="row"><button class="btn ghost" type="button" id="resetBtn">Nulstil til eksempeltal</button><span class="small muted" id="saveMsg" aria-live="polite"></span></div></form>`;
   let t;
   $('#setForm').addEventListener('input',e=>{const el=e.target;const k=el.name;if(!k)return;
-    if(el.type==='number'){const n=parseFloat(el.value);if(!Number.isFinite(n))return;S[k]=n}else{if(!el.value)return;S[k]=el.value}
+    if(el.type==='number'){const n=parseFloat(el.value);if(!Number.isFinite(n))return;S[k]=n}else{if(!el.value)return;if(k==='area'){const a=el.value.trim().toUpperCase();if(a!=='DK1'&&a!=='DK2')return;S[k]=a}else S[k]=el.value}
     S._custom=true;saveSettings();clearTimeout(t);$('#saveMsg').textContent='Regner om…';
     t=setTimeout(()=>{recompute(false);$('#saveMsg').textContent='Gemt og regnet om'},350)});
   $('#setForm').addEventListener('submit',e=>e.preventDefault());
@@ -782,10 +806,11 @@ function route(){
 function recompute(rerender){
   R=runAll();
   $('#plantName').textContent=`${S.name} · ${nf(S.kwp,1)} kWp${S.battKwh>0?` · ${nf(S.battKwh,1)} kWh batteri`:''}`;
-  $('#sampleTag').textContent=S._custom?'Dine tal · simulerede timedata':'Eksempeldata';
+  $('#sampleTag').textContent=PR?`Rigtige elpriser ${S.area} · sol og forbrug simuleret`:(S._custom?'Dine tal · simulerede timedata':'Eksempeldata');
   if(rerender||current!=='indstillinger')route();
 }
 window.addEventListener('hashchange',()=>{route();window.scrollTo(0,0)});
 let rw;window.addEventListener('resize',()=>{clearTimeout(rw);rw=setTimeout(()=>{if(current!=='indstillinger')VIEWS[current]()},150)});
 recompute(true);
+fetch('prices.json',{cache:'no-cache'}).then(r=>r.ok?r.json():null).then(j=>{if(!j||!j.areas)return;PR=j;PR.startDn=dnISO(j.start);calibrate();recompute(true)}).catch(()=>{});
 </script>
