@@ -215,7 +215,7 @@ const FIELDS=[
     ['name','Navn','',null,'text'],['inverter','Inverter / styring','',null,'text'],
     ['installDate','Taget i brug','',null,'date'],['sellStart','Salg af el startet','',null,'date','Før denne dato giver overskudsstrøm ingen betaling. Tom = fra start'],['investment','Samlet investering','kr',1000,'number','Inkl. montering, batteri og inverter'],
     ['kwp','Solcelleeffekt','kWp',0.1],['battKwh','Batteri, kapacitet','kWh',0.5,'number','0 hvis du ikke har batteri'],['battKw','Batteri, maks. effekt','kW',0.5],['eff','Batteri, virkningsgrad (tur/retur)','%',1],['battDeg','Batteri, kapacitetstab','% pr. år',0.1,'number','80 % efter 12–15 år svarer til ca. 1,5 %'],
-    ['gridCharge','Må batteriet lades fra nettet? (1 = ja, 0 = nej)','',1,'number','SunMates indstilling grid_charge'],['battToGrid','Må batteriet sælge til nettet? (1 = ja, 0 = nej)','',1,'number','SunMates indstilling battery_to_grid'],
+    ['gridCharge','Må batteriet lades fra nettet? (1 = ja, 0 = nej)','',1,'number','Sæt 0 kun hvis netopladning er slået fra i appen'],['battToGrid','Må batteriet sælge til nettet? (1 = ja, 0 = nej)','',1,'number','0 mens "Stop batteriafladning til elnet" er slået til i SunMate'],
     ['invKw','Inverter, effekt','kW',0.5],['oversize','Inverter, tilladt overdimensionering','%',5,'number','Hvor mange kWp paneler inverteren må have i forhold til sin effekt'],
   ]],
   ['Forbrug',[
@@ -344,8 +344,14 @@ function simOptSelf(day,soc0,cap,detail,ev){
   return res.done(soc[23],ev);
 }
 /* Optimal plan: dynamisk programmering med kendte døgnpriser */
+const planScore=(x,day)=>x.cost-x.soc*(day.buy.reduce((a,b)=>a+b)/24)*Math.sqrt(S.eff/100)*0.8;
 function simOpt(day,soc0,cap,detail){
-  if(!S.gridCharge&&!S.battToGrid&&cap>=0.2)return simOptSelf(day,soc0,cap,detail,evPlan(day,true));
+  if(cap<0.2)return simOptDP(day,soc0,cap,detail);
+  const g=simOptSelf(day,soc0,cap,detail,evPlan(day,true));
+  if(!S.gridCharge&&!S.battToGrid)return g;
+  const d=simOptDP(day,soc0,cap,detail);return planScore(g,day)<planScore(d,day)?g:d;
+}
+function simOptDP(day,soc0,cap,detail){
   const ec=Math.sqrt(S.eff/100),ed=ec;
   const ev=evPlan(day,true);
   const res=acc(detail);
@@ -364,14 +370,15 @@ function simOpt(day,soc0,cap,detail){
     for(let i=0;i<W;i++){let best=1e18,bj=i;
       const lo=Math.max(0,i-K),hi=Math.min(N,i+K);
       for(let j=lo;j<=hi;j++){const e=(j-i)*st;const net=pv-c-(e>0?e/ec:0)+(e<0?-e*ed:0);
-        const v=(net<0?-net*bu:-net*se)+V[(h+1)*W+j];if(v<best-1e-12){best=v;bj=j}}
+        const cr=(e<0&&!S.battToGrid)?Math.min(net,Math.max(0,pv-c)):net;
+        const v=(net<0?-net*bu:-cr*se)+V[(h+1)*W+j];if(v<best-1e-12){best=v;bj=j}}
       V[h*W+i]=best;C[h*W+i]=bj}
   }
   let i=Math.min(N,Math.max(0,Math.round(soc0/st)));
   for(let h=0;h<24;h++){
     const j=C[h*W+i],e=(j-i)*st,c=cs[h];
     const net=day.pv[h]-c-(e>0?e/ec:0)+(e<0?-e*ed:0);let imp=0,exp=0,cur=0;
-    if(net<0)imp=-net;else if(day.sell[h]<0)cur=net;else exp=net;
+    if(net<0)imp=-net;else if(day.sell[h]<0)cur=net;else{exp=(e<0&&!S.battToGrid)?Math.min(net,Math.max(0,day.pv[h]-c)):net;cur=net-exp}
     i=j;res.add(day,h,c,ev[h],e,i*st,imp,exp,cur);
   }
   return res.done(i*st,ev);
@@ -400,7 +407,9 @@ function runAll(){
     const day=genDay(dn,d0);
     const yrs=(dn-d0)/365.25,cap=S.battKwh>0?Math.max(0,S.battKwh*0.95*(1-S.battDeg/100*yrs)):0;
     const det=dn===today||dn===today+1;
-    const a=simAI(day,socA,cap,det),o=simOpt(day,socO,cap,det);socA=a.soc;socO=o.soc;
+    const a=simAI(day,socA,cap,det);let o=simOpt(day,socO,cap,det);
+    if(Math.abs(socA-socO)<0.05&&planScore(a,day)<planScore(o,day))o=a; // den bedste kendte plan er aldrig dårligere end inverterens egen
+    socA=a.soc;socO=o.soc;
     const evOptCost=o.ev.reduce((s,q,h)=>s+q*day.buy[h],0),evAiCost=a.ev.reduce((s,q,h)=>s+q*day.buy[h],0);
     let base=0;for(let h=0;h<24;h++)base+=(day.load[h]+o.ev[h])*day.buy[h];
     const gA=base-a.cost,gO=base-o.cost;
